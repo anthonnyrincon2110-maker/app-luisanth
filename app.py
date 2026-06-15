@@ -18,7 +18,7 @@ DB_NAME = "luisanth.db"
 def conectar_bd():
     return sqlite3.connect(DB_NAME)
 
-# --- INICIALIZAR BASE DE DATOS ACTUALIZADA ---
+# --- INICIALIZAR Y ACTUALIZAR BASE DE DATOS ---
 def inicializar_bd():
     conn = conectar_bd()
     cursor = conn.cursor()
@@ -37,14 +37,16 @@ def inicializar_bd():
     )
     """)
     
-    # Tabla de Contratos
+    # Tabla de Contratos (Campos separados para Capital y Total con Interés)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS contratos (
         id_contrato INTEGER PRIMARY KEY AUTOINCREMENT,
         id_cliente INTEGER,
         tipo TEXT,
-        monto_inicial REAL NOT NULL,
-        saldo_pendiente REAL NOT NULL,
+        monto_inicial REAL NOT NULL, -- Actúa como Capital Prestado
+        capital_prestado REAL DEFAULT 0, -- Respaldo explícito del capital neto
+        monto_total_adeudado REAL DEFAULT 0, -- Capital + Interés Total Inicial
+        saldo_pendiente REAL NOT NULL, -- Balance pendiente total que va bajando
         tasa_interes REAL NOT NULL,
         turno_san INTEGER DEFAULT 0,
         estado TEXT DEFAULT 'Activo',
@@ -52,12 +54,26 @@ def inicializar_bd():
     )
     """)
     
+    # Script de migración interna automática por si la tabla ya existía
+    try:
+        cursor.execute("ALTER TABLE contratos ADD COLUMN capital_prestado REAL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE contratos ADD COLUMN monto_total_adeudado REAL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+        
+    # Ajustar registros viejos que tengan los campos nuevos vacíos
+    cursor.execute("UPDATE contratos SET capital_prestado = monto_inicial WHERE capital_prestado = 0")
+    cursor.execute("UPDATE contratos SET monto_total_adeudado = saldo_pendiente WHERE monto_total_adeudado = 0")
+    
     # Tabla de Historial de Pagos
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS pagos (
         id_pago INTEGER PRIMARY KEY AUTOINCREMENT,
         id_contrato INTEGER,
-        abono_capital REAL NOT NULL,
+        abono_capital REAL NOT NULL, -- En San representa el pago de la cuota completa
         mora_cobrada REAL DEFAULT 0,
         fecha TEXT NOT NULL,
         FOREIGN KEY (id_contrato) REFERENCES contratos(id_contrato)
@@ -75,7 +91,7 @@ def inicializar_bd():
     )
     """)
     
-    # Tabla de Capital
+    # Tabla de Capital base de la empresa
     cursor.execute("CREATE TABLE IF NOT EXISTS negocio (id INTEGER PRIMARY KEY, capital_total REAL)")
     cursor.execute("SELECT COUNT(*) FROM negocio")
     if cursor.fetchone()[0] == 0:
@@ -86,7 +102,7 @@ def inicializar_bd():
 
 inicializar_bd()
 
-# --- SEGURIDAD ---
+# --- CREDENCIALES DE SEGURIDAD ---
 USUARIOS = {
     "anthonny": "admin123",       
     "luisangel": "socio456"       
@@ -128,7 +144,7 @@ else:
             st.session_state["usuario_actual"] = ""
             st.rerun()
 
-    # --- MENÚ DE OPCIONES ---
+    # --- MENÚ DINÁMICO ---
     if st.session_state["rol"] == "admin":
         menu_opciones = [
             "📊 Panel Financiero", 
@@ -157,7 +173,7 @@ else:
     st.markdown("---")
 
     # ==========================================
-    # PANTALLA: BUSCADOR DE CLIENTES + EDICIÓN COMPLETA (DEUDAS INCLUIDAS)
+    # PANTALLA: BUSCADOR DE CLIENTES + EDICIÓN COMPLETA (DESGLOSADA)
     # ==========================================
     if opcion == "🔍 Buscador de Clientes":
         st.header("🔍 Buscador General de Clientes")
@@ -166,10 +182,9 @@ else:
         conn = conectar_bd()
         cursor = conn.cursor()
         
-        # Consultamos datos del cliente y traemos información de su contrato activo si tiene uno
         cursor.execute("""
             SELECT cl.id_cliente, cl.nombre, cl.cedula, cl.telefono, cl.direccion, cl.dia_pago, cl.modalidad_pago, cl.estado,
-                   co.id_contrato, co.tipo, co.saldo_pendiente
+                   co.id_contrato, co.tipo, co.capital_prestado, co.monto_total_adeudado, co.saldo_pendiente
             FROM clientes cl
             LEFT JOIN contratos co ON cl.id_cliente = co.id_cliente AND co.estado = 'Activo'
             WHERE cl.nombre LIKE ? OR cl.cedula LIKE ?
@@ -180,15 +195,15 @@ else:
         
         if resultados:
             for r in resultados:
-                id_clie, nombre_clie, cedula_clie, telf_clie, dir_clie, dia_clie, mod_clie, est_clie, id_cont, tipo_cont, saldo_cont = r
+                id_clie, nombre_clie, cedula_clie, telf_clie, dir_clie, dia_clie, mod_clie, est_clie, id_cont, tipo_cont, cap_pres, tot_adeu, saldo_cont = r
                 
                 label_tarjeta = f"👤 {nombre_clie} - Cédula: {cedula_clie}"
                 if tipo_cont:
-                    label_tarjeta += f" ({tipo_cont} - Debe: ${saldo_cont:,.2f})"
+                    label_tarjeta += f" ({tipo_cont} - Restan: ${saldo_cont:,.2f})"
                 
                 with st.expander(label_tarjeta):
                     if st.session_state["rol"] == "admin":
-                        st.markdown("📝 **Modo Administrador: Edición de Datos y Balances Financieros**")
+                        st.markdown("📝 **Modo Administrador: Edición y Desglose Financiero**")
                         
                         with st.form(f"form_edit_{id_clie}"):
                             nuevo_nombre = st.text_input("Nombre Completo:", value=nombre_clie)
@@ -199,12 +214,14 @@ else:
                             nueva_mod = st.selectbox("Modalidad de Cobro:", ["Semanal", "Quincenal", "Mensual"], index=["Semanal", "Quincenal", "Mensual"].index(mod_clie))
                             nuevo_est = st.selectbox("Estado del Perfil:", ["Activo", "Inactivo"], index=["Activo", "Inactivo"].index(est_clie))
                             
-                            # Si el cliente tiene una deuda activa, el administrador puede corregirla manualmente aquí
-                            nuevo_saldo = 0.0
                             if id_cont:
                                 st.markdown("---")
-                                st.markdown(f"💰 **Contrato Activo Registrado:** {tipo_cont}")
-                                nuevo_saldo = st.number_input("Corregir / Ajustar Monto Adeudado Actual ($):", min_value=0.0, value=float(saldo_cont), step=100.0)
+                                st.write(f"📋 **Estructura Interna del Contrato ({tipo_cont}):**")
+                                st.write(f"🔹 **Capital Neto Entregado:** ${cap_pres:,.2f}")
+                                st.write(f"🔹 **Monto Adeudado Inicial (Con Interés):** ${tot_adeu:,.2f}")
+                                
+                                # El balance pendiente total que va bajando es editable por errores de digitación
+                                nuevo_saldo = st.number_input("Corregir Balance Pendiente Total Actual ($):", min_value=0.0, value=float(saldo_cont), step=100.0)
                             
                             st.markdown("---")
                             col_btn1, col_btn2 = st.columns(2)
@@ -217,22 +234,20 @@ else:
                                 conn = conectar_bd()
                                 cursor = conn.cursor()
                                 try:
-                                    # Actualizar perfil del cliente
                                     cursor.execute("""
                                         UPDATE clientes 
                                         SET nombre=?, cedula=?, telefono=?, direccion=?, dia_pago=?, modalidad_pago=?, estado=?
                                         WHERE id_cliente=?
                                     """, (nuevo_nombre, nueva_cedula, nuevo_telf, nueva_dir, nuevo_dia, nueva_mod, nuevo_est, id_clie))
                                     
-                                    # Actualizar saldo pendiente si tiene un contrato activo
                                     if id_cont:
                                         cursor.execute("UPDATE contratos SET saldo_pendiente=? WHERE id_contrato=?", (nuevo_saldo, id_cont))
                                         
                                     conn.commit()
-                                    st.success("¡Información y balances actualizados de manera correcta!")
+                                    st.success("¡Información y balances actualizados con éxito!")
                                     st.rerun()
                                 except sqlite3.IntegrityError:
-                                    st.error("Error: Esa cédula ya pertenece a otro usuario.")
+                                    st.error("Error: Esa cédula ya pertenece a otra persona.")
                                 conn.close()
                                 
                             if btn_eliminar:
@@ -248,10 +263,14 @@ else:
                     else:
                         st.write(f"**Teléfono:** {telf_clie}")
                         st.write(f"**Dirección:** {dir_clie}")
-                        st.write(f"**Día de cobro:** {dia_clie} ({mod_clie})")
-                        st.write(f"**Estado:** {est_clie}")
+                        st.write(f"**Ruta de cobro:** {dia_clie} ({mod_clie})")
                         if tipo_cont:
-                            st.write(f"**Contrato:** {tipo_cont} | **Monto Adeudado:** ${saldo_cont:,.2f}")
+                            st.markdown("---")
+                            st.write(f"📈 **Contrato:** {tipo_cont}")
+                            st.write(f"💵 **Capital Prestado:** ${cap_pres:,.2f}")
+                            st.write(f"💰 **Total con Intereses:** ${tot_adeu:,.2f}")
+                            st.write(f"📉 **Balance Pendiente Actual:** ${saldo_cont:,.2f}")
+
         else:
             st.warning("No hay coincidencias en la base de datos.")
 
@@ -264,7 +283,7 @@ else:
         conn = conectar_bd()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT cl.nombre, co.tipo, co.monto_inicial, co.saldo_pendiente, cl.estado
+            SELECT cl.nombre, co.tipo, co.capital_prestado, co.monto_total_adeudado, co.saldo_pendiente
             FROM clientes cl
             LEFT JOIN contratos co ON cl.id_cliente = co.id_cliente
             WHERE co.estado = 'Activo' OR co.estado IS NULL
@@ -278,19 +297,20 @@ else:
         else:
             datos_tabla = []
             for item in cartera:
-                nombre_c, tipo_c, inicial_c, pendiente_c, estado_c = item
+                nombre_c, tipo_c, cap_p, tot_a, pend_c = item
                 modalidad_visual = tipo_c if tipo_c else "Sin contrato activo"
-                saldo_visual = f"${pendiente_c:,.2f}" if pendiente_c else "$0.00"
                 
                 datos_tabla.append({
                     "Cliente": nombre_c,
                     "Modalidad": modalidad_visual,
-                    "Deuda Actual": saldo_visual
+                    "Capital Prestado": f"${cap_p:,.2f}" if cap_p else "$0.00",
+                    "Deuda Inicial Total": f"${tot_a:,.2f}" if tot_a else "$0.00",
+                    "Balance Pendiente Actual": f"${pend_c:,.2f}" if pend_c else "$0.00"
                 })
             st.table(datos_tabla)
 
     # ==========================================
-    # PANTALLA: PANEL FINANCIERO (SOLO ADMIN)
+    # PANTALLA: PANEL FINANCIERO (LÓGICA MATEMÁTICA PURA REESTRUCTURADA)
     # ==========================================
     elif opcion == "📊 Panel Financiero" and st.session_state["rol"] == "admin":
         st.header("Balance General - Modo Administrador")
@@ -307,32 +327,54 @@ else:
             capital_total = nuevo_capital
             st.success("¡Capital base actualizado!")
 
-        cursor.execute("SELECT monto_inicial, saldo_pendiente, tasa_interes, tipo FROM contratos WHERE estado = 'Activo'")
+        cursor.execute("SELECT capital_prestado, monto_total_adeudado, saldo_pendiente, tasa_interes, tipo FROM contratos WHERE estado = 'Activo'")
         contratos_activos = cursor.fetchall()
         
         cursor.execute("SELECT SUM(mora_cobrada) FROM pagos")
         total_moras = cursor.fetchone()[0] or 0.0
         conn.close()
         
-        dinero_en_calle = sum(c[1] for c in contratos_activos)
-        capital_disponible_caja = capital_total - dinero_en_calle
+        dinero_total_por_cobrar = sum(c[2] for c in contratos_activos) # Suma total de los balances pendientes ($39k, $26k, etc)
         
-        ganancias_proyectadas = 0
+        capital_neto_en_la_calle = 0
+        ganancias_proyectadas_totales = 0
+        
         for c in contratos_activos:
-            if c[3] == "Redito":
-                ganancias_proyectadas += c[1] * (c[2] / 100)
+            cap_neto_entregado, total_con_interes, balance_actual, tasa, tipo_c = c
+            
+            if "San" in tipo_c:
+                interes_ganancia = total_con_interes - cap_neto_entregado
+                ganancias_proyectadas_totales += interes_ganancia
+                
+                # Calculamos cuánto dinero ha retornado el cliente a la fecha
+                dinero_total_pagado = total_con_interes - balance_actual
+                
+                # Lógica contable: los pagos primero reponen el capital invertido que salió de caja
+                if dinero_total_pagado >= cap_neto_entregado:
+                    capital_pendiente_en_calle = 0.0
+                else:
+                    capital_pendiente_en_calle = cap_neto_entregado - dinero_total_pagado
+                    
+                capital_neto_en_la_calle += capital_pendiente_en_calle
             else:
-                # Si es plan fijo de San, la ganancia real es el interés calculado sobre el monto inicial otorgado
-                ganancias_proyectadas += c[0] * (c[2] / 100)
+                # Esquema de Rédito
+                capital_neto_en_la_calle += balance_actual
+                ganancias_proyectadas_totales += balance_actual * (tasa / 100)
+        
+        # El dinero real físico que queda en caja se basa estrictamente en el capital limpio que salió de tu bolsillo
+        capital_disponible_caja = max(0.0, capital_total - capital_neto_en_la_calle)
 
         col1, col2 = st.columns(2)
         col3, col4 = st.columns(2)
         
-        col1.metric("Capital Total", f"${capital_total:,.2f}")
-        col2.metric("Dinero en Calle (Saldos)", f"${dinero_en_calle:,.2f}")
-        col3.metric("Disponible en Caja", f"${capital_disponible_caja:,.2f}")
-        col4.metric("Ganancia Estimada de Cartera", f"${ganancias_proyectadas:,.2f}")
-        st.metric("Ingresos Extras por Mora", f"${total_moras:,.2f}")
+        col1.metric("Capital Total de Inversión", f"${capital_total:,.2f}")
+        col2.metric("Capital Neto en Calle", f"${capital_neto_en_la_calle:,.2f}")
+        col3.metric("Disponible Físico en Caja", f"${capital_disponible_caja:,.2f}")
+        col4.metric("Balance Total por Cobrar", f"${dinero_total_por_cobrar:,.2f}")
+        
+        st.markdown("---")
+        st.metric("Ganancias Futuras Esperadas de Cartera", f"${ganancias_proyectadas_totales:,.2f}")
+        st.metric("Ingresos de Caja Extras por Mora", f"${total_moras:,.2f}")
 
     # ==========================================
     # PANTALLA: REGISTRAR CLIENTE
@@ -368,7 +410,7 @@ else:
                     st.warning("Por favor rellene todos los campos obligatorios.")
 
     # ==========================================
-    # PANTALLA: CREAR PRÉSTAMO / SAN (CON MATEMÁTICA CORREGIDA)
+    # PANTALLA: CREAR PRÉSTAMO / SAN (SEPARACIÓN DE CAPITAL E INTERÉS)
     # ==========================================
     elif opcion == "📝 Crear Préstamo / San":
         st.header("Asignar Préstamo o San")
@@ -386,7 +428,7 @@ else:
             cliente_seleccionado = st.selectbox("Selecciona el Cliente:", list(opciones_clientes.keys()))
             
             tipo_contrato = st.selectbox("Modalidad del Contrato:", ["San Frio", "San Caliente", "Redito"])
-            monto_entregado = st.number_input("Monto entregado en efectivo ($):", min_value=1.0, step=500.0)
+            monto_entregado = st.number_input("Monto entregado neto en efectivo ($):", min_value=1.0, step=500.0)
             
             tasa_defecto = 10.0 if tipo_contrato == "Redito" else 20.0
             tasa = st.number_input("Tasa de interés (%):", min_value=0.0, value=tasa_defecto, step=1.0)
@@ -398,27 +440,30 @@ else:
             if st.button("Activar Contrato"):
                 id_clie = opciones_clientes[cliente_seleccionado]
                 
-                # --- MATEMÁTICA FINANCIERA SEGÚN MODALIDAD ---
+                # Separación de variables financieras claras
+                capital_prestado = monto_entregado
+                
                 if "San" in tipo_contrato:
-                    # En los planes fijos de San (Frío/Caliente), la deuda total inicial DEBE incluir los intereses acumulados de golpe
                     interes_calculado = monto_entregado * (tasa / 100)
-                    saldo_pendiente_inicial = round(monto_entregado + interes_calculado, 2)
+                    monto_total_adeudado = round(monto_entregado + interes_calculado, 2)
+                    saldo_pendiente_inicial = monto_total_adeudado
                 else:
-                    # En los Réditos, el cliente debe inicialmente el capital base bruto entregado
+                    monto_total_adeudado = monto_entregado
                     saldo_pendiente_inicial = monto_entregado
                 
                 conn = conectar_bd()
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO contratos (id_cliente, tipo, monto_inicial, saldo_pendiente, tasa_interes, turno_san)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (id_clie, tipo_contrato, monto_entregado, saldo_pendiente_inicial, tasa, turno_san))
+                    INSERT INTO contratos (id_cliente, tipo, monto_inicial, capital_prestado, monto_total_adeudado, saldo_pendiente, tasa_interes, turno_san)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (id_clie, tipo_contrato, monto_entregado, capital_prestado, monto_total_adeudado, saldo_pendiente_inicial, tasa, turno_san))
                 conn.commit()
                 conn.close()
-                st.success(f"¡Contrato {tipo_contrato} activado! Deuda total asignada en sistema: ${saldo_pendiente_inicial:,.2f}")
+                st.success(f"¡Contrato {tipo_contrato} activado de forma correcta!")
+                st.info(f"💵 Capital entregado: ${capital_prestado:,.2f} | 📈 Total con interés a cobrar: ${monto_total_adeudado:,.2f}")
 
     # ==========================================
-    # PANTALLA: REGISTRAR COBRO / PAGO
+    # PANTALLA: REGISTRAR COBRO / PAGO (BALANCE DISMINUYE CON CADA PAGO)
     # ==========================================
     elif opcion == "💸 Registrar Cobro (WhatsApp)":
         st.header("Registrar Cobros y Generar Factura Personalizada")
@@ -437,7 +482,7 @@ else:
         if not contratos_pendientes:
             st.info("No hay transacciones activas de cobro.")
         else:
-            dic_contratos = {f"{c[1]} ({c[2]} - Debe: ${c[3]:,.2f})": c for c in contratos_pendientes}
+            dic_contratos = {f"{c[1]} ({c[2]} - Restan: ${c[3]:,.2f})": c for c in contratos_pendientes}
             seleccion = st.selectbox("Selecciona el préstamo a cobrar:", list(dic_contratos.keys()))
             
             contrato_data = dic_contratos[seleccion]
@@ -449,28 +494,30 @@ else:
                 st.info(f"📋 **Modalidad: {tipo}**")
                 monto_pagando = st.number_input("Monto Total que está pagando en esta cuota ($):", min_value=0.0, max_value=float(saldo_actual), step=100.0)
                 mora_cobrada = st.number_input("Agregar cargo de Mora / Penalidad ($):", min_value=0.0, value=0.0, step=50.0)
-                abono_capital_efectivo = monto_pagando
+                abono_al_balance = monto_pagando
                 pago_redito_efectivo = 0
             else:
                 st.info("📋 **Modalidad: Rédito**")
                 pago_redito_efectivo = st.number_input("Monto que está pagando únicamente por concepto de Rédito / Interés ($):", min_value=0.0, step=100.0)
-                abono_capital_efectivo = st.number_input("Monto extra que está abonando directo al Capital para bajarlo ($):", min_value=0.0, max_value=float(saldo_actual), step=100.0)
+                abono_al_balance = st.number_input("Monto extra que está abonando directo al Capital para bajarlo ($):", min_value=0.0, max_value=float(saldo_actual), step=100.0)
                 mora_cobrada = st.number_input("Agregar cargo de Mora / Penalidad ($):", min_value=0.0, value=0.0, step=50.0)
             
             if st.button("Procesar Cobro e Historial"):
                 conn = conectar_bd()
                 cursor = conn.cursor()
-                nuevo_saldo = round(saldo_actual - abono_capital_efectivo, 2)
+                
+                # El balance pendiente total se reduce directamente por el abono ingresado
+                nuevo_saldo = round(saldo_actual - abono_al_balance, 2)
                 fecha_hoy = datetime.date.today().strftime("%Y-%m-%d")
                 
                 cursor.execute("""
                     INSERT INTO pagos (id_contrato, abono_capital, mora_cobrada, fecha) 
                     VALUES (?, ?, ?, ?)
-                """, (id_contrato, abono_capital_efectivo, mora_cobrada, fecha_hoy))
+                """, (id_contrato, abono_al_balance, mora_cobrada, fecha_hoy))
                 
                 if nuevo_saldo <= 0:
                     cursor.execute("UPDATE contratos SET saldo_pendiente = 0, estado = 'Inactivo' WHERE id_contrato = ?", (id_contrato,))
-                    st.success(f"¡El cliente {nombre_clie} ha saldado su cuenta!")
+                    st.success(f"¡El cliente {nombre_clie} ha saldado su cuenta por completo!")
                 else:
                     cursor.execute("UPDATE contratos SET saldo_pendiente = ? WHERE id_contrato = ?", (nuevo_saldo, id_contrato))
                     st.success("Cobro guardado con éxito.")
@@ -491,7 +538,7 @@ else:
 *Monto Pagando:* ${monto_pagando:,.2f}
 *Mora Aplicada:* ${mora_cobrada:,.2f}
 -------------------------------------------
-*Balance Pendiente:* ${nuevo_saldo:,.2f}
+*Balance Pendiente Total:* ${nuevo_saldo:,.2f}
 -------------------------------------------
 ¡Gracias por su pago confiable!
                     """
@@ -507,7 +554,7 @@ else:
 *Modalidad:* Rédito
 -------------------------------------------
 *Pago de Rédito:* ${pago_redito_efectivo:,.2f}
-*Abono a Capital:* ${abono_capital_efectivo:,.2f}
+*Abono a Capital:* ${abono_al_balance:,.2f}
 *Mora Aplicada:* ${mora_cobrada:,.2f}
 -------------------------------------------
 *Balance Capital Pendiente:* ${nuevo_saldo:,.2f}
