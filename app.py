@@ -5,7 +5,6 @@ import datetime
 # --- CONFIGURACIÓN DE LA PÁGINA Y BLINDAJE DE MENÚS ---
 st.set_page_config(page_title="LuisAnth - Sistema Completo", page_icon="💰", layout="centered")
 
-# Ocultamos menús internos de desarrollo de Streamlit para proteger el código
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -19,25 +18,32 @@ DB_NAME = "luisanth.db"
 def conectar_bd():
     return sqlite3.connect(DB_NAME)
 
-# --- INICIALIZAR BASE DE DATOS AVANZADA ---
+# --- INICIALIZAR BASE DE DATOS ACTUALIZADA ---
 def inicializar_bd():
     conn = conectar_bd()
     cursor = conn.cursor()
     
-    # Tabla de Clientes
+    # Tabla de Clientes (Agregada Dirección)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS clientes (
         id_cliente INTEGER PRIMARY KEY AUTOINCREMENT,
         nombre TEXT NOT NULL,
         cedula TEXT UNIQUE NOT NULL,
         telefono TEXT NOT NULL,
+        direccion TEXT DEFAULT 'No especificada',
         dia_pago TEXT NOT NULL,
         modalidad_pago TEXT NOT NULL,
         estado TEXT DEFAULT 'Activo'
     )
     """)
     
-    # Tabla de Contratos (con Turno San)
+    # Verificar si la columna dirección existe (por si usas una BD vieja)
+    cursor.execute("PRAGMA table_info(clientes)")
+    columnas = [col[1] for col in cursor.fetchall()]
+    if 'direccion' not in columnas:
+        cursor.execute("ALTER TABLE clientes ADD COLUMN direccion TEXT DEFAULT 'No especificada'")
+    
+    # Tabla de Contratos
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS contratos (
         id_contrato INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,7 +81,7 @@ def inicializar_bd():
     )
     """)
     
-    # Tabla de Capital del Negocio
+    # Tabla de Capital
     cursor.execute("CREATE TABLE IF NOT EXISTS negocio (id INTEGER PRIMARY KEY, capital_total REAL)")
     cursor.execute("SELECT COUNT(*) FROM negocio")
     if cursor.fetchone()[0] == 0:
@@ -86,9 +92,7 @@ def inicializar_bd():
 
 inicializar_bd()
 
-# ==========================================
-# SISTEMA DE LOGIN EN PANTALLA PRINCIPAL
-# ==========================================
+# --- SEGURIDAD ---
 USUARIOS = {
     "anthonny": "admin123",       
     "luisangel": "socio456"       
@@ -99,7 +103,6 @@ if "autenticado" not in st.session_state:
     st.session_state["rol"] = None
     st.session_state["usuario_actual"] = ""
 
-# SI NO ESTÁ AUTENTICADO: LOGIN EN EL CENTRO
 if not st.session_state["autenticado"]:
     st.title("💰 Bienvenidos a LuisAnth")
     st.subheader("Control de Préstamos & Soluciones Financieras")
@@ -120,9 +123,7 @@ if not st.session_state["autenticado"]:
             else:
                 st.error("⚠️ Usuario o contraseña incorrectos")
 
-# SI YA INICIÓ SESIÓN: SE DESPLIEGA LA APLICACIÓN COMPLETA
 else:
-    # Encabezado con saludo y botón de cierre en la pantalla principal
     col_saludo, col_salir = st.columns([3, 1])
     with col_saludo:
         st.write(f"👤 Conectado: **{st.session_state['usuario_actual'].capitalize()}**")
@@ -133,10 +134,12 @@ else:
             st.session_state["usuario_actual"] = ""
             st.rerun()
 
-    # --- MENÚ DE NAVEGACIÓN EN PANTALLA PRINCIPAL (SELECTBOX) ---
+    # --- MENÚ DE OPCIONES ---
     if st.session_state["rol"] == "admin":
         menu_opciones = [
             "📊 Panel Financiero", 
+            "🔍 Buscador de Clientes",
+            "📋 Cartera y Deudas",
             "👤 Registrar Cliente", 
             "📝 Crear Préstamo / San",
             "💸 Registrar Cobro (WhatsApp)",
@@ -146,6 +149,8 @@ else:
         ]
     else:
         menu_opciones = [
+            "🔍 Buscador de Clientes",
+            "📋 Cartera y Deudas",
             "👤 Registrar Cliente", 
             "📝 Crear Préstamo / San",
             "💸 Registrar Cobro (WhatsApp)",
@@ -158,14 +163,75 @@ else:
     st.markdown("---")
 
     # ==========================================
+    # NUEVA PANTALLA: BUSCADOR DE CLIENTES
+    # ==========================================
+    if opcion == "🔍 Buscador de Clientes":
+        st.header("🔍 Buscador General de Clientes")
+        busqueda = st.text_input("Escribe el nombre o la cédula del cliente para buscar:")
+        
+        conn = conectar_bd()
+        cursor = conn.cursor()
+        if busqueda:
+            cursor.execute("SELECT nombre, cedula, telefono, direccion, dia_pago, modalidad_pago, estado FROM clientes WHERE nombre LIKE ? OR cedula LIKE ?", (f"%{busqueda}%", f"%{busqueda}%"))
+        else:
+            cursor.execute("SELECT nombre, cedula, telefono, direccion, dia_pago, modalidad_pago, estado FROM clientes")
+        
+        resultados = cursor.fetchall()
+        conn.close()
+        
+        if resultados:
+            for r in resultados:
+                with st.expander(f"👤 {r[0]} - Cédula: {r[1]}"):
+                    st.write(f"**Teléfono:** {r[2]}")
+                    st.write(f"**Dirección:** {r[3]}")
+                    st.write(f"**Día de cobro fijo:** {r[4]}")
+                    st.write(f"**Modalidad de pago:** {r[5]}")
+                    st.write(f"**Estado del perfil:** {r[6]}")
+        else:
+            st.warning("No se encontraron clientes registrados con esos datos.")
+
+    # ==========================================
+    # NUEVA PANTALLA: CARTERA Y DEUDAS
+    # ==========================================
+    elif opcion == "📋 Cartera y Deudas":
+        st.header("📋 Lista de Clientes, Modalidades y Saldos Pendientes")
+        
+        conn = conectar_bd()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT cl.nombre, co.tipo, co.monto_inicial, co.saldo_pendiente, cl.estado
+            FROM clientes cl
+            LEFT JOIN contratos co ON cl.id_cliente = co.id_cliente
+            WHERE co.estado = 'Activo' OR co.estado IS NULL
+            ORDER BY co.saldo_pendiente DESC
+        """)
+        cartera = cursor.fetchall()
+        conn.close()
+        
+        if not cartera:
+            st.info("No hay deudas ni contratos activos registrados en el sistema.")
+        else:
+            datos_tabla = []
+            for item in cartera:
+                nombre_c, tipo_c, inicial_c, pendiente_c, estado_c = item
+                modalidad_visual = tipo_c if tipo_c else "Sin contrato activo"
+                saldo_visual = f"${pendiente_c:,.2f}" if pendiente_c else "$0.00"
+                
+                datos_tabla.append({
+                    "Cliente": nombre_c,
+                    "Modalidad": modalidad_visual,
+                    "Deuda Actual": saldo_visual
+                })
+            st.table(datos_tabla)
+
+    # ==========================================
     # 1. PANTALLA: PANEL FINANCIERO (SOLO ADMIN)
     # ==========================================
-    if opcion == "📊 Panel Financiero" and st.session_state["rol"] == "admin":
+    elif opcion == "📊 Panel Financiero" and st.session_state["rol"] == "admin":
         st.header("Balance General - Modo Administrador")
         
         conn = conectar_bd()
         cursor = conn.cursor()
-        
         cursor.execute("SELECT capital_total FROM negocio WHERE id = 1")
         capital_total = cursor.fetchone()[0]
         
@@ -200,7 +266,6 @@ else:
         col2.metric("Dinero en Calle (Saldos)", f"${dinero_en_calle:,.2f}")
         col3.metric("Disponible en Caja", f"${capital_disponible_caja:,.2f}")
         col4.metric("Ganancia Estimada de Cartera", f"${ganancias_proyectadas:,.2f}")
-        
         st.metric("Ingresos Extras por Mora", f"${total_moras:,.2f}")
 
     # ==========================================
@@ -213,6 +278,7 @@ else:
             nombre = st.text_input("Nombre Completo:")
             cedula = st.text_input("Cédula de Identidad:")
             telefono = st.text_input("Número de Teléfono:")
+            direccion = st.text_input("Dirección de Residencia:")
             dia_pago = st.selectbox("Día de Cobro:", ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"])
             modalidad_pago = st.selectbox("Modalidad de Pago:", ["Semanal", "Quincenal", "Mensual"])
             
@@ -224,9 +290,9 @@ else:
                         conn = conectar_bd()
                         cursor = conn.cursor()
                         cursor.execute("""
-                            INSERT INTO clientes (nombre, cedula, telefono, dia_pago, modalidad_pago) 
-                            VALUES (?, ?, ?, ?, ?)
-                        """, (nombre, cedula, telefono, dia_pago, modalidad_pago))
+                            INSERT INTO clientes (nombre, cedula, telefono, direccion, dia_pago, modalidad_pago) 
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, (nombre, cedula, telefono, direccion, dia_pago, modalidad_pago))
                         conn.commit()
                         conn.close()
                         st.success(f"¡Cliente {nombre} agregado correctamente!")
@@ -276,15 +342,15 @@ else:
                 st.success(f"¡Contrato de {tipo_contrato} activado con éxito!")
 
     # ==========================================
-    # 4. PANTALLA: REGISTRAR COBRO / PAGO
+    # 4. PANTALLA: REGISTRAR COBRO / PAGO (ACTUALIZADA)
     # ==========================================
     elif opcion == "💸 Registrar Cobro (WhatsApp)":
-        st.header("Registrar Cobros e Historial")
+        st.header("Registrar Cobros y Generar Factura Personalizada")
         
         conn = conectar_bd()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT co.id_contrato, cl.nombre, co.tipo, co.saldo_pendiente, co.tasa_interes 
+            SELECT co.id_contrato, cl.nombre, co.tipo, co.saldo_pendiente, co.tasa_interes, cl.cedula, cl.telefono, cl.direccion
             FROM contratos co 
             JOIN clientes cl ON co.id_cliente = cl.id_cliente 
             WHERE co.estado = 'Activo'
@@ -299,97 +365,119 @@ else:
             seleccion = st.selectbox("Selecciona el préstamo a cobrar:", list(dic_contratos.keys()))
             
             contrato_data = dic_contratos[seleccion]
-            id_contrato, nombre_clie, tipo, saldo_actual, tasa_int = contrato_data
+            id_contrato, nombre_clie, tipo, saldo_actual, tasa_int, cedula_clie, telefono_clie, direccion_clie = contrato_data
             
             st.markdown("---")
-            interes_obligatorio = 0
-            if tipo == "Redito":
-                interes_obligatorio = saldo_actual * (tasa_int / 100)
-                st.warning(f"💡 **Rédito del Período:** ${interes_obligatorio:,.2f}")
             
-            abono_capital = st.number_input("Abono directo al Capital ($):", min_value=0.0, max_value=float(saldo_actual), step=100.0)
-            mora_cobrada = st.number_input("Agregar cargo de Mora / Penalidad ($):", min_value=0.0, value=0.0, step=50.0)
+            # Formulario dinámico según modalidad
+            if "San" in tipo:
+                st.info(f"📋 **Modalidad: {tipo}** (Las cuotas semanales reducen capital e intereses juntos).")
+                monto_pagando = st.number_input("Monto Total que está pagando en esta cuota ($):", min_value=0.0, max_value=float(saldo_actual), step=100.0)
+                mora_cobrada = st.number_input("Agregar cargo de Mora / Penalidad ($):", min_value=0.0, value=0.0, step=50.0)
+                abono_capital_efectivo = monto_pagando # En el San, todo el abono reduce la deuda total directa
+                pago_redito_efectivo = 0
+            else:
+                st.info("📋 **Modalidad: Rédito**")
+                pago_redito_efectivo = st.number_input("Monto que está pagando únicamente por concepto de Rédito / Interés ($):", min_value=0.0, step=100.0)
+                abono_capital_efectivo = st.number_input("Monto extra que está abonando directo al Capital para bajarlo ($):", min_value=0.0, max_value=float(saldo_actual), step=100.0)
+                mora_cobrada = st.number_input("Agregar cargo de Mora / Penalidad ($):", min_value=0.0, value=0.0, step=50.0)
             
             if st.button("Procesar Cobro e Historial"):
                 conn = conectar_bd()
                 cursor = conn.cursor()
-                nuevo_saldo = round(saldo_actual - abono_capital, 2)
+                
+                # Se resta el abono al capital real
+                nuevo_saldo = round(saldo_actual - abono_capital_efectivo, 2)
                 fecha_hoy = datetime.date.today().strftime("%Y-%m-%d")
                 
+                # Registramos el pago en la BD
                 cursor.execute("""
                     INSERT INTO pagos (id_contrato, abono_capital, mora_cobrada, fecha) 
                     VALUES (?, ?, ?, ?)
-                """, (id_contrato, abono_capital, mora_cobrada, fecha_hoy))
+                """, (id_contrato, abono_capital_efectivo, mora_cobrada, fecha_hoy))
                 
                 if nuevo_saldo <= 0:
                     cursor.execute("UPDATE contratos SET saldo_pendiente = 0, estado = 'Inactivo' WHERE id_contrato = ?", (id_contrato,))
                     st.success(f"¡El cliente {nombre_clie} ha saldado su cuenta!")
                 else:
                     cursor.execute("UPDATE contratos SET saldo_pendiente = ? WHERE id_contrato = ?", (nuevo_saldo, id_contrato))
-                    st.success(f"Cobro guardado con éxito.")
+                    st.success("Cobro guardado con éxito.")
                     
                 conn.commit()
                 conn.close()
                 
-                total_entregado = abono_capital + (interes_obligatorio if tipo == "Redito" else 0) + mora_cobrada
-                texto_recibo = f"""
+                # --- GENERACIÓN DE FACTURA PERSONALIZADA CRITERIOS USUARIO ---
+                if "San" in tipo:
+                    texto_recibo = f"""
 📝 *RECIBO DE PAGO - LUISANTH*
 -------------------------------------------
 *Cliente:* {nombre_clie}
+*Cédula:* {cedula_clie}
+*Teléfono:* {telefono_clie}
 *Fecha:* {fecha_hoy}
 *Modalidad:* {tipo}
-*Abono Capital:* ${abono_capital:,.2f}
-{"*Interés Rédito:* $" + f"{interes_obligatorio:,.2f}" if tipo == 'Redito' else ""}
-*Mora Cobrada:* ${mora_cobrada:,.2f}
 -------------------------------------------
-*Total Recibido:* ${total_entregado:,.2f}
+*Monto Pagando:* ${monto_pagando:,.2f}
+*Mora Aplicada:* ${mora_cobrada:,.2f}
+-------------------------------------------
 *Balance Pendiente:* ${nuevo_saldo:,.2f}
 -------------------------------------------
 ¡Gracias por su pago confiable!
-                """
-                st.text_area("Copia este texto para enviarlo por WhatsApp:", value=texto_recibo.strip(), height=250)
+                    """
+                else:
+                    texto_recibo = f"""
+📝 *RECIBO DE PAGO - LUISANTH*
+-------------------------------------------
+*Cliente:* {nombre_clie}
+*Cédula:* {cedula_clie}
+*Teléfono:* {telefono_clie}
+*Dirección:* {direccion_clie}
+*Fecha:* {fecha_hoy}
+*Modalidad:* Rédito
+-------------------------------------------
+*Pago de Rédito:* ${pago_redito_efectivo:,.2f}
+*Abono a Capital:* ${abono_capital_efectivo:,.2f}
+*Mora Aplicada:* ${mora_cobrada:,.2f}
+-------------------------------------------
+*Balance Capital Pendiente:* ${nuevo_saldo:,.2f}
+-------------------------------------------
+¡Gracias por su pago confiable!
+                    """
+                st.text_area("Copia este texto para enviarlo por WhatsApp:", value=texto_recibo.strip(), height=260)
 
     # ==========================================
-    # 5. PANTALLA: CALCULADORA DE CUOTAS
+    # LAS DEMÁS PANTALLAS (CALCULADORA, COBROS DÍA, CIERRE) QUEDAN IGUAL
     # ==========================================
     elif opcion == "🧮 Calculadora de Cuotas":
         st.header("Calculadora de Alta Precisión LuisAnth")
         tipo_calc = st.radio("Tipo de Estructura Financiera:", ["Fijo por San (Frío / Caliente)", "Variable por Réditos (10% s/ Balance)"])
         monto_sim = st.number_input("Monto del capital solicitado ($):", min_value=1.0, value=20000.0, step=500.0)
         frecuencia_sim = st.selectbox("Frecuencia de los pagos:", ["Semanal", "Quincenal", "Mensual"])
-        
         st.markdown("---")
         
         if tipo_calc == "Fijo por San (Frío / Caliente)":
             tasa_sim = st.number_input("Tasa de interés total pactada para el San (%):", min_value=0.0, value=20.0, step=1.0)
             pagos_sim = st.number_input("Número total de turnos / cuotas a dividir:", min_value=1, value=10, step=1)
-            
             if st.button("Calcular Plan Fijo"):
                 interes_total = round(monto_sim * (tasa_sim / 100), 2)
                 monto_total = round(monto_sim + interes_total, 2)
                 cuota_resultado = round(monto_total / pagos_sim, 2)
-                
                 st.subheader("📊 Resultados del Plan Fijo")
                 st.info(f"**Capital Neto:** ${monto_sim:,.2f} | **Interés Total del San:** ${interes_total:,.2f}")
                 st.success(f"**Monto Neto a Retornar:** ${monto_total:,.2f}")
                 st.metric(label=f"Cuota fija obligatoria ({frecuencia_sim})", value=f"${cuota_resultado:,.2f}")
-                
         else:
             tasa_redito = st.number_input("Tasa fija de rédito aplicada (%):", min_value=0.0, value=10.0, step=0.5)
             porcentaje_abono = st.slider("Porcentaje estimado de abono al capital por período (%):", min_value=5, max_value=100, value=25, step=5)
-            
             balance = monto_sim
             abono_fijo_capital = round(monto_sim * (porcentaje_abono / 100), 2)
-            
             datos_tabla = []
             periodo = 1
-            
             while balance > 0 and periodo <= 20:
                 interes_periodo = round(balance * (tasa_redito / 100), 2)
                 abono_efectivo = balance if balance < abono_fijo_capital else abono_fijo_capital
                 total_cobro_periodo = round(interes_periodo + abono_efectivo, 2)
                 balance_restante = round(balance - abono_efectivo, 2)
-                
                 datos_tabla.append({
                     "Período": periodo,
                     "Balance Inicial": f"${balance:,.2f}",
@@ -400,17 +488,11 @@ else:
                 })
                 balance = balance_restante
                 periodo += 1
-                
             st.table(datos_tabla)
 
-    # ==========================================
-    # 6. PANTALLA: COBROS DEL DÍA
-    # ==========================================
     elif opcion == "📅 Cobros del Día":
         st.header("Recordatorio Automático de Cobros")
-        dia_actual = st.selectbox("Selecciona el día de hoy para revisar la ruta:", 
-                                  ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"])
-        
+        dia_actual = st.selectbox("Selecciona el día de hoy para revisar la ruta:", ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"])
         conn = conectar_bd()
         cursor = conn.cursor()
         cursor.execute("""
@@ -421,7 +503,6 @@ else:
         """, (dia_actual,))
         cobros = cursor.fetchall()
         conn.close()
-        
         if not cobros:
             st.success(f"No hay cobros programados para los días {dia_actual}.")
         else:
@@ -433,13 +514,9 @@ else:
                 else:
                     st.info(f"👤 **{cob[0]}** | **{cob[2]}** (Turno San: #{cob[6]}) | Saldo Restante: ${cob[3]:,.2f} ({cob[5]})")
 
-    # ==========================================
-    # 7. PANTALLA: CIERRE DE CAJA DIARIO
-    # ==========================================
     elif opcion == "🔒 Cierre de Caja":
         st.header("Arqueo y Cuadre de Caja Diario")
         fecha_cierre = datetime.date.today().strftime("%Y-%m-%d")
-        
         conn = conectar_bd()
         cursor = conn.cursor()
         cursor.execute("SELECT capital_total FROM negocio WHERE id = 1")
@@ -447,15 +524,11 @@ else:
         cursor.execute("SELECT SUM(saldo_pendiente) FROM contratos WHERE estado = 'Activo'")
         en_calle = cursor.fetchone()[0] or 0.0
         conn.close()
-        
         monto_sistema_esperado = round(capital_total - en_calle, 2)
         st.info(f"💰 **Dinero esperado en caja física según sistema:** ${monto_sistema_esperado:,.2f}")
-        
         monto_fisico_real = st.number_input("Introduce la cantidad de dinero en efectivo REAL que tienes en mano ($):", min_value=0.0, step=100.0)
-        
         if st.button("Guardar Cierre de Caja"):
             diferencia = round(monto_fisico_real - monto_sistema_esperado, 2)
-            
             try:
                 conn = conectar_bd()
                 cursor = conn.cursor()
@@ -465,7 +538,6 @@ else:
                 """, (fecha_cierre, monto_fisico_real, monto_sistema_esperado, diferencia))
                 conn.commit()
                 conn.close()
-                
                 if diferencia == 0:
                     st.success("¡Perfecto! La caja cuadró de forma exacta a los centavos ($0.00).")
                 elif diferencia > 0:
