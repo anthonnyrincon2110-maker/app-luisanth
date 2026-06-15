@@ -3,9 +3,9 @@ import streamlit as st
 import datetime
 
 # --- CONFIGURACIÓN DE LA PÁGINA Y BLINDAJE DE MENÚS ---
-# Escondemos el menú de tres puntos de Streamlit donde dice "View source" (Ver código fuente)
 st.set_page_config(page_title="LuisAnth - Sistema Completo", page_icon="💰", layout="centered")
 
+# Ocultamos menús internos de desarrollo de Streamlit para proteger el código
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -87,14 +87,11 @@ def inicializar_bd():
 inicializar_bd()
 
 # ==========================================
-# SISTEMA DE LOGIN INTEGRADO
+# SISTEMA DE LOGIN EN PANTALLA PRINCIPAL
 # ==========================================
-st.sidebar.title("🔐 Acceso LuisAnth")
-
-# Diccionario de usuarios con contraseñas fijas
 USUARIOS = {
-    "anthonny": "admin123",       # Tu usuario
-    "luisangel": "socio456"       # El usuario de tu socio
+    "anthonny": "admin123",       
+    "luisangel": "socio456"       
 }
 
 if "autenticado" not in st.session_state:
@@ -102,34 +99,42 @@ if "autenticado" not in st.session_state:
     st.session_state["rol"] = None
     st.session_state["usuario_actual"] = ""
 
+# SI NO ESTÁ AUTENTICADO: LOGIN EN EL CENTRO
 if not st.session_state["autenticado"]:
-    usuario_input = st.sidebar.text_input("Usuario:").lower().strip()
-    clave_input = st.sidebar.text_input("Contraseña:", type="password")
-    
-    if st.sidebar.button("Iniciar Sesión"):
-        if usuario_input in USUARIOS and clave_input == USUARIOS[usuario_input]:
-            st.session_state["autenticado"] = True
-            st.session_state["usuario_actual"] = usuario_input
-            st.session_state["rol"] = "admin" if usuario_input == "anthonny" else "socio"
-            st.rerun()
-        else:
-            st.sidebar.error("Usuario o contraseña incorrectos")
-            
     st.title("💰 Bienvenidos a LuisAnth")
-    st.info("Por favor, inicia sesión en la barra lateral para acceder al sistema.")
+    st.subheader("Control de Préstamos & Soluciones Financieras")
+    st.markdown("---")
+    
+    with st.form("form_login"):
+        st.write("🔒 **Introduce tus credenciales de acceso:**")
+        usuario_input = st.text_input("Usuario:").lower().strip()
+        clave_input = st.text_input("Contraseña:", type="password")
+        boton_entrar = st.form_submit_button("Iniciar Sesión")
+        
+        if boton_entrar:
+            if usuario_input in USUARIOS and clave_input == USUARIOS[usuario_input]:
+                st.session_state["autenticado"] = True
+                st.session_state["usuario_actual"] = usuario_input
+                st.session_state["rol"] = "admin" if usuario_input == "anthonny" else "socio"
+                st.rerun()
+            else:
+                st.error("⚠️ Usuario o contraseña incorrectos")
 
+# SI YA INICIÓ SESIÓN: SE DESPLIEGA LA APLICACIÓN COMPLETA
 else:
-    # Saludo y botón de cerrar sesión
-    st.sidebar.success(f"Conectado como: {st.session_state['usuario_actual'].capitalize()}")
-    if st.sidebar.button("Cerrar Sesión"):
-        st.session_state["autenticado"] = False
-        st.session_state["rol"] = None
-        st.session_state["usuario_actual"] = ""
-        st.rerun()
+    # Encabezado con saludo y botón de cierre en la pantalla principal
+    col_saludo, col_salir = st.columns([3, 1])
+    with col_saludo:
+        st.write(f"👤 Conectado: **{st.session_state['usuario_actual'].capitalize()}**")
+    with col_salir:
+        if st.button("Cerrar Sesión"):
+            st.session_state["autenticado"] = False
+            st.session_state["rol"] = None
+            st.session_state["usuario_actual"] = ""
+            st.rerun()
 
-    # --- MENÚ DE NAVEGACIÓN BASADO EN ROLES ---
+    # --- MENÚ DE NAVEGACIÓN EN PANTALLA PRINCIPAL (SELECTBOX) ---
     if st.session_state["rol"] == "admin":
-        # Menú completo para ti
         menu_opciones = [
             "📊 Panel Financiero", 
             "👤 Registrar Cliente", 
@@ -140,7 +145,6 @@ else:
             "🔒 Cierre de Caja"
         ]
     else:
-        # Menú protegido para tu socio (Se oculta el "Panel Financiero" para restringir edición de capital general)
         menu_opciones = [
             "👤 Registrar Cliente", 
             "📝 Crear Préstamo / San",
@@ -150,10 +154,7 @@ else:
             "🔒 Cierre de Caja"
         ]
         
-    opcion = st.sidebar.selectbox("Selecciona una sección:", menu_opciones)
-
-    # --- TÍTULO PRINCIPAL ---
-    st.title("💰 Sistema de Préstamos LuisAnth v2.1")
+    opcion = st.selectbox("📂 Selecciona la sección que deseas gestionar:", menu_opciones)
     st.markdown("---")
 
     # ==========================================
