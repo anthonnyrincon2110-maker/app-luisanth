@@ -23,7 +23,7 @@ def inicializar_bd():
     conn = conectar_bd()
     cursor = conn.cursor()
     
-    # Tabla de Clientes (Agregada Dirección)
+    # Tabla de Clientes
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS clientes (
         id_cliente INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,12 +36,6 @@ def inicializar_bd():
         estado TEXT DEFAULT 'Activo'
     )
     """)
-    
-    # Verificar si la columna dirección existe (por si usas una BD vieja)
-    cursor.execute("PRAGMA table_info(clientes)")
-    columnas = [col[1] for col in cursor.fetchall()]
-    if 'direccion' not in columnas:
-        cursor.execute("ALTER TABLE clientes ADD COLUMN direccion TEXT DEFAULT 'No especificada'")
     
     # Tabla de Contratos
     cursor.execute("""
@@ -163,7 +157,7 @@ else:
     st.markdown("---")
 
     # ==========================================
-    # NUEVA PANTALLA: BUSCADOR DE CLIENTES
+    # PANTALLA ACTUALIZADA: BUSCADOR DE CLIENTES + EDICIÓN/BORRADO (SOLO ADMIN)
     # ==========================================
     if opcion == "🔍 Buscador de Clientes":
         st.header("🔍 Buscador General de Clientes")
@@ -172,26 +166,76 @@ else:
         conn = conectar_bd()
         cursor = conn.cursor()
         if busqueda:
-            cursor.execute("SELECT nombre, cedula, telefono, direccion, dia_pago, modalidad_pago, estado FROM clientes WHERE nombre LIKE ? OR cedula LIKE ?", (f"%{busqueda}%", f"%{busqueda}%"))
+            cursor.execute("SELECT id_cliente, nombre, cedula, telefono, direccion, dia_pago, modalidad_pago, estado FROM clientes WHERE nombre LIKE ? OR cedula LIKE ?", (f"%{busqueda}%", f"%{busqueda}%"))
         else:
-            cursor.execute("SELECT nombre, cedula, telefono, direccion, dia_pago, modalidad_pago, estado FROM clientes")
+            cursor.execute("SELECT id_cliente, nombre, cedula, telefono, direccion, dia_pago, modalidad_pago, estado FROM clientes")
         
         resultados = cursor.fetchall()
         conn.close()
         
         if resultados:
             for r in resultados:
-                with st.expander(f"👤 {r[0]} - Cédula: {r[1]}"):
-                    st.write(f"**Teléfono:** {r[2]}")
-                    st.write(f"**Dirección:** {r[3]}")
-                    st.write(f"**Día de cobro fijo:** {r[4]}")
-                    st.write(f"**Modalidad de pago:** {r[5]}")
-                    st.write(f"**Estado del perfil:** {r[6]}")
+                id_clie, nombre_clie, cedula_clie, telf_clie, dir_clie, dia_clie, mod_clie, est_clie = r
+                
+                with st.expander(f"👤 {nombre_clie} - Cédula: {cedula_clie}"):
+                    # Si es Administrador (Anthonny), muestra formulario para editar o borrar
+                    if st.session_state["rol"] == "admin":
+                        st.markdown("📝 **Modo Administrador: Puedes modificar o eliminar este registro**")
+                        
+                        with st.form(f"form_edit_{id_clie}"):
+                            nuevo_nombre = st.text_input("Nombre:", value=nombre_clie)
+                            nueva_cedula = st.text_input("Cédula:", value=cedula_clie)
+                            nuevo_telf = st.text_input("Teléfono:", value=telf_clie)
+                            nueva_dir = st.text_input("Dirección:", value=dir_clie)
+                            nuevo_dia = st.selectbox("Día de Cobro:", ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"], index=["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"].index(dia_clie))
+                            nueva_mod = st.selectbox("Modalidad:", ["Semanal", "Quincenal", "Mensual"], index=["Semanal", "Quincenal", "Mensual"].index(mod_clie))
+                            nuevo_est = st.selectbox("Estado del Perfil:", ["Activo", "Inactivo"], index=["Activo", "Inactivo"].index(est_clie))
+                            
+                            col_btn1, col_btn2 = st.columns(2)
+                            with col_btn1:
+                                btn_actualizar = st.form_submit_button("💾 Guardar Cambios")
+                            with col_btn2:
+                                btn_eliminar = st.form_submit_button("🚨 Eliminar Cliente")
+                            
+                            if btn_actualizar:
+                                conn = conectar_bd()
+                                cursor = conn.cursor()
+                                try:
+                                    cursor.execute("""
+                                        UPDATE clientes 
+                                        SET nombre=?, cedula=?, telefono=?, direccion=?, dia_pago=?, modalidad_pago=?, estado=?
+                                        WHERE id_cliente=?
+                                    """, (nuevo_nombre, nueva_cedula, nuevo_telf, nueva_dir, nuevo_dia, nueva_mod, nuevo_est, id_clie))
+                                    conn.commit()
+                                    st.success(f"¡Datos de {nuevo_nombre} actualizados con éxito!")
+                                    st.rerun()
+                                except sqlite3.IntegrityError:
+                                    st.error("Error: Esa cédula ya pertenece a otro cliente.")
+                                conn.close()
+                                
+                            if btn_eliminar:
+                                conn = conectar_bd()
+                                cursor = conn.cursor()
+                                # Borramos también sus contratos vinculados para no dejar basura en la base de datos
+                                cursor.execute("DELETE FROM contratos WHERE id_cliente=?", (id_clie,))
+                                cursor.execute("DELETE FROM clientes WHERE id_cliente=?", (id_clie,))
+                                conn.commit()
+                                conn.close()
+                                st.warning(f"El cliente {nombre_clie} y sus contratos han sido eliminados del sistema.")
+                                st.rerun()
+                    
+                    # Si es Socio (Luis Ángel), solo lee la información estática sin botones
+                    else:
+                        st.write(f"**Teléfono:** {telf_clie}")
+                        st.write(f"**Dirección:** {dir_clie}")
+                        st.write(f"**Día de cobro fijo:** {dia_clie}")
+                        st.write(f"**Modalidad de pago:** {mod_clie}")
+                        st.write(f"**Estado del perfil:** {est_clie}")
         else:
             st.warning("No se encontraron clientes registrados con esos datos.")
 
     # ==========================================
-    # NUEVA PANTALLA: CARTERA Y DEUDAS
+    # 2. PANTALLA: CARTERA Y DEUDAS
     # ==========================================
     elif opcion == "📋 Cartera y Deudas":
         st.header("📋 Lista de Clientes, Modalidades y Saldos Pendientes")
@@ -225,7 +269,7 @@ else:
             st.table(datos_tabla)
 
     # ==========================================
-    # 1. PANTALLA: PANEL FINANCIERO (SOLO ADMIN)
+    # 3. PANTALLA: PANEL FINANCIERO (SOLO ADMIN)
     # ==========================================
     elif opcion == "📊 Panel Financiero" and st.session_state["rol"] == "admin":
         st.header("Balance General - Modo Administrador")
@@ -269,7 +313,7 @@ else:
         st.metric("Ingresos Extras por Mora", f"${total_moras:,.2f}")
 
     # ==========================================
-    # 2. PANTALLA: REGISTRAR CLIENTE
+    # 4. PANTALLA: REGISTRAR CLIENTE
     # ==========================================
     elif opcion == "👤 Registrar Cliente":
         st.header("Agregar Nuevo Cliente")
@@ -302,7 +346,7 @@ else:
                     st.warning("Por favor rellene todos los campos obligatorios.")
 
     # ==========================================
-    # 3. PANTALLA: CREAR PRÉSTAMO / SAN
+    # 5. PANTALLA: CREAR PRÉSTAMO / SAN
     # ==========================================
     elif opcion == "📝 Crear Préstamo / San":
         st.header("Asignar Préstamo o San")
@@ -342,7 +386,7 @@ else:
                 st.success(f"¡Contrato de {tipo_contrato} activado con éxito!")
 
     # ==========================================
-    # 4. PANTALLA: REGISTRAR COBRO / PAGO (ACTUALIZADA)
+    # 6. PANTALLA: REGISTRAR COBRO / PAGO
     # ==========================================
     elif opcion == "💸 Registrar Cobro (WhatsApp)":
         st.header("Registrar Cobros y Generar Factura Personalizada")
@@ -369,12 +413,11 @@ else:
             
             st.markdown("---")
             
-            # Formulario dinámico según modalidad
             if "San" in tipo:
-                st.info(f"📋 **Modalidad: {tipo}** (Las cuotas semanales reducen capital e intereses juntos).")
+                st.info(f"📋 **Modalidad: {tipo}**")
                 monto_pagando = st.number_input("Monto Total que está pagando en esta cuota ($):", min_value=0.0, max_value=float(saldo_actual), step=100.0)
                 mora_cobrada = st.number_input("Agregar cargo de Mora / Penalidad ($):", min_value=0.0, value=0.0, step=50.0)
-                abono_capital_efectivo = monto_pagando # En el San, todo el abono reduce la deuda total directa
+                abono_capital_efectivo = monto_pagando
                 pago_redito_efectivo = 0
             else:
                 st.info("📋 **Modalidad: Rédito**")
@@ -385,12 +428,9 @@ else:
             if st.button("Procesar Cobro e Historial"):
                 conn = conectar_bd()
                 cursor = conn.cursor()
-                
-                # Se resta el abono al capital real
                 nuevo_saldo = round(saldo_actual - abono_capital_efectivo, 2)
                 fecha_hoy = datetime.date.today().strftime("%Y-%m-%d")
                 
-                # Registramos el pago en la BD
                 cursor.execute("""
                     INSERT INTO pagos (id_contrato, abono_capital, mora_cobrada, fecha) 
                     VALUES (?, ?, ?, ?)
@@ -406,7 +446,6 @@ else:
                 conn.commit()
                 conn.close()
                 
-                # --- GENERACIÓN DE FACTURA PERSONALIZADA CRITERIOS USUARIO ---
                 if "San" in tipo:
                     texto_recibo = f"""
 📝 *RECIBO DE PAGO - LUISANTH*
@@ -420,7 +459,7 @@ else:
 *Monto Pagando:* ${monto_pagando:,.2f}
 *Mora Aplicada:* ${mora_cobrada:,.2f}
 -------------------------------------------
-*Balance Pendiente:* ${nuevo_saldo:,.2f}
+*Balance Pendiente:* ${nuevo_saldo:YEah,.2f}
 -------------------------------------------
 ¡Gracias por su pago confiable!
                     """
@@ -446,7 +485,7 @@ else:
                 st.text_area("Copia este texto para enviarlo por WhatsApp:", value=texto_recibo.strip(), height=260)
 
     # ==========================================
-    # LAS DEMÁS PANTALLAS (CALCULADORA, COBROS DÍA, CIERRE) QUEDAN IGUAL
+    # LAS DEMÁS PANTALLAS SE MANTIENEN IGUAL
     # ==========================================
     elif opcion == "🧮 Calculadora de Cuotas":
         st.header("Calculadora de Alta Precisión LuisAnth")
