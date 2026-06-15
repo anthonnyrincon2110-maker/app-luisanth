@@ -157,7 +157,7 @@ else:
     st.markdown("---")
 
     # ==========================================
-    # PANTALLA ACTUALIZADA: BUSCADOR DE CLIENTES + EDICIÓN/BORRADO (SOLO ADMIN)
+    # PANTALLA: BUSCADOR DE CLIENTES + EDICIÓN COMPLETA (DEUDAS INCLUIDAS)
     # ==========================================
     if opcion == "🔍 Buscador de Clientes":
         st.header("🔍 Buscador General de Clientes")
@@ -165,77 +165,98 @@ else:
         
         conn = conectar_bd()
         cursor = conn.cursor()
-        if busqueda:
-            cursor.execute("SELECT id_cliente, nombre, cedula, telefono, direccion, dia_pago, modalidad_pago, estado FROM clientes WHERE nombre LIKE ? OR cedula LIKE ?", (f"%{busqueda}%", f"%{busqueda}%"))
-        else:
-            cursor.execute("SELECT id_cliente, nombre, cedula, telefono, direccion, dia_pago, modalidad_pago, estado FROM clientes")
+        
+        # Consultamos datos del cliente y traemos información de su contrato activo si tiene uno
+        cursor.execute("""
+            SELECT cl.id_cliente, cl.nombre, cl.cedula, cl.telefono, cl.direccion, cl.dia_pago, cl.modalidad_pago, cl.estado,
+                   co.id_contrato, co.tipo, co.saldo_pendiente
+            FROM clientes cl
+            LEFT JOIN contratos co ON cl.id_cliente = co.id_cliente AND co.estado = 'Activo'
+            WHERE cl.nombre LIKE ? OR cl.cedula LIKE ?
+        """, (f"%{busqueda}%", f"%{busqueda}%"))
         
         resultados = cursor.fetchall()
         conn.close()
         
         if resultados:
             for r in resultados:
-                id_clie, nombre_clie, cedula_clie, telf_clie, dir_clie, dia_clie, mod_clie, est_clie = r
+                id_clie, nombre_clie, cedula_clie, telf_clie, dir_clie, dia_clie, mod_clie, est_clie, id_cont, tipo_cont, saldo_cont = r
                 
-                with st.expander(f"👤 {nombre_clie} - Cédula: {cedula_clie}"):
-                    # Si es Administrador (Anthonny), muestra formulario para editar o borrar
+                label_tarjeta = f"👤 {nombre_clie} - Cédula: {cedula_clie}"
+                if tipo_cont:
+                    label_tarjeta += f" ({tipo_cont} - Debe: ${saldo_cont:,.2f})"
+                
+                with st.expander(label_tarjeta):
                     if st.session_state["rol"] == "admin":
-                        st.markdown("📝 **Modo Administrador: Puedes modificar o eliminar este registro**")
+                        st.markdown("📝 **Modo Administrador: Edición de Datos y Balances Financieros**")
                         
                         with st.form(f"form_edit_{id_clie}"):
-                            nuevo_nombre = st.text_input("Nombre:", value=nombre_clie)
-                            nueva_cedula = st.text_input("Cédula:", value=cedula_clie)
-                            nuevo_telf = st.text_input("Teléfono:", value=telf_clie)
-                            nueva_dir = st.text_input("Dirección:", value=dir_clie)
+                            nuevo_nombre = st.text_input("Nombre Completo:", value=nombre_clie)
+                            nueva_cedula = st.text_input("Cédula de Identidad:", value=cedula_clie)
+                            nuevo_telf = st.text_input("Número de Teléfono:", value=telf_clie)
+                            nueva_dir = st.text_input("Dirección de Residencia:", value=dir_clie)
                             nuevo_dia = st.selectbox("Día de Cobro:", ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"], index=["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"].index(dia_clie))
-                            nueva_mod = st.selectbox("Modalidad:", ["Semanal", "Quincenal", "Mensual"], index=["Semanal", "Quincenal", "Mensual"].index(mod_clie))
+                            nueva_mod = st.selectbox("Modalidad de Cobro:", ["Semanal", "Quincenal", "Mensual"], index=["Semanal", "Quincenal", "Mensual"].index(mod_clie))
                             nuevo_est = st.selectbox("Estado del Perfil:", ["Activo", "Inactivo"], index=["Activo", "Inactivo"].index(est_clie))
                             
+                            # Si el cliente tiene una deuda activa, el administrador puede corregirla manualmente aquí
+                            nuevo_saldo = 0.0
+                            if id_cont:
+                                st.markdown("---")
+                                st.markdown(f"💰 **Contrato Activo Registrado:** {tipo_cont}")
+                                nuevo_saldo = st.number_input("Corregir / Ajustar Monto Adeudado Actual ($):", min_value=0.0, value=float(saldo_cont), step=100.0)
+                            
+                            st.markdown("---")
                             col_btn1, col_btn2 = st.columns(2)
                             with col_btn1:
                                 btn_actualizar = st.form_submit_button("💾 Guardar Cambios")
                             with col_btn2:
-                                btn_eliminar = st.form_submit_button("🚨 Eliminar Cliente")
+                                btn_eliminar = st.form_submit_button("🚨 Eliminar por Completo")
                             
                             if btn_actualizar:
                                 conn = conectar_bd()
                                 cursor = conn.cursor()
                                 try:
+                                    # Actualizar perfil del cliente
                                     cursor.execute("""
                                         UPDATE clientes 
                                         SET nombre=?, cedula=?, telefono=?, direccion=?, dia_pago=?, modalidad_pago=?, estado=?
                                         WHERE id_cliente=?
                                     """, (nuevo_nombre, nueva_cedula, nuevo_telf, nueva_dir, nuevo_dia, nueva_mod, nuevo_est, id_clie))
+                                    
+                                    # Actualizar saldo pendiente si tiene un contrato activo
+                                    if id_cont:
+                                        cursor.execute("UPDATE contratos SET saldo_pendiente=? WHERE id_contrato=?", (nuevo_saldo, id_cont))
+                                        
                                     conn.commit()
-                                    st.success(f"¡Datos de {nuevo_nombre} actualizados con éxito!")
+                                    st.success("¡Información y balances actualizados de manera correcta!")
                                     st.rerun()
                                 except sqlite3.IntegrityError:
-                                    st.error("Error: Esa cédula ya pertenece a otro cliente.")
+                                    st.error("Error: Esa cédula ya pertenece a otro usuario.")
                                 conn.close()
                                 
                             if btn_eliminar:
                                 conn = conectar_bd()
                                 cursor = conn.cursor()
-                                # Borramos también sus contratos vinculados para no dejar basura en la base de datos
+                                cursor.execute("DELETE FROM pagos WHERE id_contrato IN (SELECT id_contrato FROM contratos WHERE id_cliente=?)", (id_clie,))
                                 cursor.execute("DELETE FROM contratos WHERE id_cliente=?", (id_clie,))
                                 cursor.execute("DELETE FROM clientes WHERE id_cliente=?", (id_clie,))
                                 conn.commit()
                                 conn.close()
-                                st.warning(f"El cliente {nombre_clie} y sus contratos han sido eliminados del sistema.")
+                                st.warning("El cliente y todos sus registros financieros han sido eliminados.")
                                 st.rerun()
-                    
-                    # Si es Socio (Luis Ángel), solo lee la información estática sin botones
                     else:
                         st.write(f"**Teléfono:** {telf_clie}")
                         st.write(f"**Dirección:** {dir_clie}")
-                        st.write(f"**Día de cobro fijo:** {dia_clie}")
-                        st.write(f"**Modalidad de pago:** {mod_clie}")
-                        st.write(f"**Estado del perfil:** {est_clie}")
+                        st.write(f"**Día de cobro:** {dia_clie} ({mod_clie})")
+                        st.write(f"**Estado:** {est_clie}")
+                        if tipo_cont:
+                            st.write(f"**Contrato:** {tipo_cont} | **Monto Adeudado:** ${saldo_cont:,.2f}")
         else:
-            st.warning("No se encontraron clientes registrados con esos datos.")
+            st.warning("No hay coincidencias en la base de datos.")
 
     # ==========================================
-    # 2. PANTALLA: CARTERA Y DEUDAS
+    # PANTALLA: CARTERA Y DEUDAS
     # ==========================================
     elif opcion == "📋 Cartera y Deudas":
         st.header("📋 Lista de Clientes, Modalidades y Saldos Pendientes")
@@ -253,7 +274,7 @@ else:
         conn.close()
         
         if not cartera:
-            st.info("No hay deudas ni contratos activos registrados en el sistema.")
+            st.info("No hay transacciones activas.")
         else:
             datos_tabla = []
             for item in cartera:
@@ -269,7 +290,7 @@ else:
             st.table(datos_tabla)
 
     # ==========================================
-    # 3. PANTALLA: PANEL FINANCIERO (SOLO ADMIN)
+    # PANTALLA: PANEL FINANCIERO (SOLO ADMIN)
     # ==========================================
     elif opcion == "📊 Panel Financiero" and st.session_state["rol"] == "admin":
         st.header("Balance General - Modo Administrador")
@@ -301,6 +322,7 @@ else:
             if c[3] == "Redito":
                 ganancias_proyectadas += c[1] * (c[2] / 100)
             else:
+                # Si es plan fijo de San, la ganancia real es el interés calculado sobre el monto inicial otorgado
                 ganancias_proyectadas += c[0] * (c[2] / 100)
 
         col1, col2 = st.columns(2)
@@ -313,7 +335,7 @@ else:
         st.metric("Ingresos Extras por Mora", f"${total_moras:,.2f}")
 
     # ==========================================
-    # 4. PANTALLA: REGISTRAR CLIENTE
+    # PANTALLA: REGISTRAR CLIENTE
     # ==========================================
     elif opcion == "👤 Registrar Cliente":
         st.header("Agregar Nuevo Cliente")
@@ -346,7 +368,7 @@ else:
                     st.warning("Por favor rellene todos los campos obligatorios.")
 
     # ==========================================
-    # 5. PANTALLA: CREAR PRÉSTAMO / SAN
+    # PANTALLA: CREAR PRÉSTAMO / SAN (CON MATEMÁTICA CORREGIDA)
     # ==========================================
     elif opcion == "📝 Crear Préstamo / San":
         st.header("Asignar Préstamo o San")
@@ -363,8 +385,8 @@ else:
             opciones_clientes = {c[1]: c[0] for c in clientes_activos}
             cliente_seleccionado = st.selectbox("Selecciona el Cliente:", list(opciones_clientes.keys()))
             
-            tipo_contrato = st.selectbox("Modalidad:", ["San Frio", "San Caliente", "Redito"])
-            monto = st.number_input("Monto entregado ($):", min_value=1.0, step=500.0)
+            tipo_contrato = st.selectbox("Modalidad del Contrato:", ["San Frio", "San Caliente", "Redito"])
+            monto_entregado = st.number_input("Monto entregado en efectivo ($):", min_value=1.0, step=500.0)
             
             tasa_defecto = 10.0 if tipo_contrato == "Redito" else 20.0
             tasa = st.number_input("Tasa de interés (%):", min_value=0.0, value=tasa_defecto, step=1.0)
@@ -375,18 +397,28 @@ else:
             
             if st.button("Activar Contrato"):
                 id_clie = opciones_clientes[cliente_seleccionado]
+                
+                # --- MATEMÁTICA FINANCIERA SEGÚN MODALIDAD ---
+                if "San" in tipo_contrato:
+                    # En los planes fijos de San (Frío/Caliente), la deuda total inicial DEBE incluir los intereses acumulados de golpe
+                    interes_calculado = monto_entregado * (tasa / 100)
+                    saldo_pendiente_inicial = round(monto_entregado + interes_calculado, 2)
+                else:
+                    # En los Réditos, el cliente debe inicialmente el capital base bruto entregado
+                    saldo_pendiente_inicial = monto_entregado
+                
                 conn = conectar_bd()
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT INTO contratos (id_cliente, tipo, monto_inicial, saldo_pendiente, tasa_interes, turno_san)
                     VALUES (?, ?, ?, ?, ?, ?)
-                """, (id_clie, tipo_contrato, monto, monto, tasa, turno_san))
+                """, (id_clie, tipo_contrato, monto_entregado, saldo_pendiente_inicial, tasa, turno_san))
                 conn.commit()
                 conn.close()
-                st.success(f"¡Contrato de {tipo_contrato} activado con éxito!")
+                st.success(f"¡Contrato {tipo_contrato} activado! Deuda total asignada en sistema: ${saldo_pendiente_inicial:,.2f}")
 
     # ==========================================
-    # 6. PANTALLA: REGISTRAR COBRO / PAGO
+    # PANTALLA: REGISTRAR COBRO / PAGO
     # ==========================================
     elif opcion == "💸 Registrar Cobro (WhatsApp)":
         st.header("Registrar Cobros y Generar Factura Personalizada")
@@ -459,7 +491,7 @@ else:
 *Monto Pagando:* ${monto_pagando:,.2f}
 *Mora Aplicada:* ${mora_cobrada:,.2f}
 -------------------------------------------
-*Balance Pendiente:* ${nuevo_saldo:YEah,.2f}
+*Balance Pendiente:* ${nuevo_saldo:,.2f}
 -------------------------------------------
 ¡Gracias por su pago confiable!
                     """
